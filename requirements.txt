@@ -1,0 +1,14 @@
+flask
+flask_cors
+google-generativeai
+pdfplumber 
+langchain
+langchain_community
+sqlalchemy
+psycopg2-binary
+faiss-cpu
+requests 
+pytesseract
+Pillow
+python-docx 
+PyMuPDF 
