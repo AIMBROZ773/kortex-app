@@ -26,7 +26,7 @@ from langchain_core.documents import Document
 from sqlalchemy import desc
 from serpapi import GoogleSearch
 
-app = Flask(__name__)
+app = Flask(__name__) 
 CORS(app)
 
 # --- CONFIGURATION ---
@@ -459,6 +459,7 @@ def chat():
 
         chat_history_list = pickle.loads(conv.chat_history)
         
+        # General chat (no document)
         if not conv.doc_hash:
              llm = OllamaLLM(base_url=OLLAMA_BASE_URL, model=CHAT_MODEL_NAME)
              def generate_general():
@@ -470,27 +471,40 @@ def chat():
                  session.commit()
              return Response(generate_general(), mimetype='text/plain')
 
+        # Document chat (with the new, robust logic)
         doc_store = session.query(DocumentStore).filter_by(doc_hash=conv.doc_hash).first()
         if not doc_store: return jsonify({"error": "Document data not found"}), 404
 
         embeddings = get_ollama_embeddings()
         vectorstore = FAISS.deserialize_from_bytes(embeddings=embeddings, serialized=pickle.loads(doc_store.faiss_index), allow_dangerous_deserialization=True)
         
-        # Simplified RAG chain
-        retriever = vectorstore.as_retriever()
-        relevant_docs = retriever.get_relevant_documents(message)
-        context = "\\n".join([doc.page_content for doc in relevant_docs])
-        
-        prompt = f"""Answer the user's question based ONLY on the following context.
-        Context: {context}
-        Question: {message}
-        Answer:"""
-        
-        llm = OllamaLLM(base_url=OLLAMA_BASE_URL, model=CHAT_MODEL_NAME)
-        
         def generate_doc_chat():
+            # Step 1: Manually retrieve relevant context
+            retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
+            relevant_docs = retriever.get_relevant_documents(message)
+            context = "\\n---\\n".join([doc.page_content for doc in relevant_docs])
+
+            # Step 2: Build a simple, clean prompt using the safe string-joining method
+            prompt_parts = [
+                "You are a helpful AI assistant. Answer the user's question based ONLY on the following context from the document. If the answer is not in the context, say you don't know.",
+                "",
+                "CONTEXT FROM DOCUMENT:",
+                "---",
+                context,
+                "---",
+                "",
+                "QUESTION:",
+                message,
+                "",
+                "ANSWER:"
+            ]
+            prompt = "\\n".join(prompt_parts)
+            
+            # Step 3: Call the LLM directly
+            llm = OllamaLLM(base_url=OLLAMA_BASE_URL, model=CHAT_MODEL_NAME)
             response = llm.invoke(prompt)
             yield response
+            
             chat_history_list.append(('langchain', message, response))
             conv_to_update = session.merge(conv)
             conv_to_update.chat_history = pickle.dumps(chat_history_list)
@@ -501,7 +515,7 @@ def chat():
         session.rollback()
         return jsonify({"error": f"An error occurred: {str(e)}"}), 500
     finally:
-        session.close()
+        session.close() 
 
 @app.route('/tutor', methods=['POST'])
 def tutor():
