@@ -1,21 +1,20 @@
+## KORTEX V1.5 - FINAL MASTER BLUEPRINT ##
 import os
 import hashlib
 import pickle
 import io
 import uuid
-import json 
+import json
 import re
 import google.generativeai as genai
 from flask import Flask, request, jsonify, render_template_string, Response
 from flask_cors import CORS
-import fitz  # PyMuPDF 
-import pdfplumber 
+import fitz  # PyMuPDF
+import pdfplumber
 from PIL import Image
 import pytesseract
 import docx
-from werkzeug.utils import secure_filename 
-
-
+from werkzeug.utils import secure_filename
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import OllamaEmbeddings
@@ -46,8 +45,8 @@ else:
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    SERPER_API_KEY = os.environ.get("SERPER_API_KEY")
 
+SERPER_API_KEY = os.environ.get("SERPER_API_KEY")
 OLLAMA_BASE_URL = "http://host.docker.internal:11434" if os.environ.get("DOCKER_ENV") == "true" else "http://localhost:11434"
 CHAT_MODEL_NAME = "llama3"
 
@@ -70,9 +69,6 @@ class Conversation(Base):
     doc_hash = Column(String(32), nullable=True)
     chat_history = Column(LargeBinary, default=pickle.dumps([]))
     tutor_curriculum = Column(Text, nullable=True)
-    document_type = Column(String(50), nullable=True)
-    tutor_state = Column(String(50), default='socratic_dialogue')  # <-- ADD THIS
-    quiz_data = Column(Text, nullable=True)                      # <-- AND THIS 
 
 def setup_database():
     if not engine: return
@@ -85,40 +81,32 @@ setup_database()
 def get_document_text(filepath, file_content):
     text = ""
     file_extension = os.path.splitext(filepath)[1].lower()
-
     if file_extension == '.pdf':
         try:
-            # First, try the fast text extraction
             with pdfplumber.open(io.BytesIO(file_content)) as pdf:
                 for page in pdf.pages:
-                    page_text = page.extract_text()
+                    page_text = page.extract_text(x_tolerance=2, y_tolerance=2)
                     if page_text:
                         text += page_text + "\\n"
-            
-            # If text is still empty, it's likely a scanned image PDF -> try OCR
             if not text.strip():
-                # Use Pillow to open the PDF pages as images
                 pdf_images = fitz.open(stream=file_content, filetype="pdf")
                 for page_num in range(len(pdf_images)):
                     page = pdf_images.load_page(page_num)
                     pix = page.get_pixmap()
                     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                    # Use Tesseract OCR to read text from the image
-                    text += pytesseract.image_to_string(img, lang='eng') + "\\n" 
+                    text += pytesseract.image_to_string(img, lang='eng') + "\\n"
         except Exception as e:
-            print(f"Error processing PDF: {e}") # for debugging
+            print(f"Error processing PDF: {e}")
             return ""
-
     elif file_extension == '.docx':
         try:
             doc = docx.Document(io.BytesIO(file_content))
             for para in doc.paragraphs:
                 text += para.text + "\\n"
         except Exception as e:
-            print(f"Error processing DOCX: {e}") # for debugging
+            print(f"Error processing DOCX: {e}")
             return ""
-            
-    return text 
+    return text
 
 def get_text_chunks(text):
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
@@ -133,6 +121,7 @@ def get_vector_store(text_chunks, embeddings):
 def get_conversation_chain(vectorstore):
     llm = Ollama(base_url=OLLAMA_BASE_URL, model=CHAT_MODEL_NAME)
     return ConversationalRetrievalChain.from_llm(llm=llm, retriever=vectorstore.as_retriever())
+
 # --- UI TEMPLATE ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -154,9 +143,7 @@ HTML_TEMPLATE = """
         @keyframes loader-dots { 0% { transform: scale(0); opacity: 0; } 50% { transform: scale(1); opacity: 1; } 100% { transform: scale(0); opacity: 0; } }
         .kortex-gradient { background: -webkit-linear-gradient(45deg, #38bdf8, #a78bfa, #f472b6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
         #send-button:disabled { opacity: 0.5; cursor: not-allowed; }
-        .message-content {
-            white-space: pre-line;  
-        }
+        .message-content { white-space: pre-line; }
     </style>
 </head>
 <body class="text-gray-200">
@@ -205,9 +192,8 @@ HTML_TEMPLATE = """
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         let recognition;
         let isRecording = false;
-        marked.setOptions({ breaks: true });
 
-        
+        marked.setOptions({ breaks: true });
 
         function scrollToBottom() { mainContent.scrollTop = mainContent.scrollHeight; }
         function updateSendButtonState() { sendButton.disabled = userInput.value.trim() === ''; }
@@ -235,14 +221,24 @@ HTML_TEMPLATE = """
             formData.append('file', fileInput.files[0]);
             
             setThinkingState(true, 'Performing deep analysis... this may take several minutes.');
-            const response = await fetch('/upload', { method: 'POST', body: formData });
+            const response = await fetch('/upload', { 
+                method: 'POST', 
+                body: formData,
+                headers: { 'X-Conversation-ID': conversationId || '' }
+            });
             const data = await response.json();
             setThinkingState(false);
             if(response.ok) {
                 conversationId = data.conversation_id;
-                chatHistory.innerHTML = '';
+                // Don't clear history if a conversation is already active
+                if(document.getElementById('welcome-message')) {
+                    chatHistory.innerHTML = '';
+                }
                 document.getElementById('welcome-message')?.remove();
                 document.getElementById('feature-panel').classList.remove('hidden');
+                if (chatHistory.innerHTML === '') { // Only add message if chat is new
+                   addMessage('Kortex', `**${fileInput.files[0].name}** analyzed and ready. You are now in Research Mode.`);
+                }
             } else { addMessage('Kortex', `Analysis failed: ${data.error}`); }
         }
 
@@ -340,14 +336,16 @@ HTML_TEMPLATE = """
             }
             setThinkingState(false);
         }
-function addMessage(sender, text) {
+
+        function addMessage(sender, text) {
             document.getElementById('welcome-message')?.remove();
             
             const messageWrapper = document.createElement('div');
             messageWrapper.className = `w-full flex py-2 ${sender === 'You' ? 'justify-end' : 'justify-start'}`;
             
             const messageBubble = document.createElement('div');
-            messageBubble.className = `max-w-xl p-3 rounded-xl ${sender === 'You' ? 'bg-blue-600 text-white' : ''}`;
+            // User gets a box, AI does not, for the Gemini look
+            messageBubble.className = `max-w-xl ${sender === 'You' ? 'bg-blue-600 text-white p-3 rounded-xl' : ''}`;
             
             const contentDiv = document.createElement('div');
             contentDiv.className = 'prose prose-invert max-w-none message-content';
@@ -355,8 +353,6 @@ function addMessage(sender, text) {
             if(sender === 'You') {
                 contentDiv.textContent = text;
             } else {
-                // THE FINAL FIX: Brute-force the style directly onto the element
-                contentDiv.style.whiteSpace = 'pre-line'; 
                 contentDiv.innerHTML = marked.parse(text);
             }
             
@@ -365,7 +361,7 @@ function addMessage(sender, text) {
             chatHistory.appendChild(messageWrapper);
             scrollToBottom();
             return messageWrapper;
-        }  
+        }
 
         function setThinkingState(isThinking, text = '') {
              let thinkingDiv = document.getElementById('thinking-indicator');
@@ -393,8 +389,7 @@ function addMessage(sender, text) {
     </script>
 </body>
 </html>
-""" 
-
+"""
 
 # --- API ENDPOINTS ---
 @app.route('/')
@@ -430,24 +425,21 @@ def upload():
         
         doc = session.query(DocumentStore).filter_by(doc_hash=doc_hash).first()
         if not doc:
-            # Use the new universal document reader with OCR fallback
             raw_text = get_document_text(filename, file_content)
             
-            # The final, corrected resiliency check
-            if not raw_text.strip():
-                return jsonify({"error": "This document contains no readable text or is too short to analyze. Please try another document."}), 400
+            if not raw_text or len(raw_text.strip()) < 50:
+                return jsonify({"error": "This document contains no readable text or is too short to analyze."}), 400
 
-            # Standard processing pipeline
             text_chunks = get_text_chunks(raw_text)
             embeddings = get_ollama_embeddings()
             vectorstore = get_vector_store(text_chunks, embeddings)
             new_doc = DocumentStore(doc_hash=doc_hash, chunks=pickle.dumps(text_chunks), faiss_index=pickle.dumps(vectorstore.serialize_to_bytes()))
-            session.add(new_doc) 
+            session.add(new_doc)
         
-        conv_id = request.headers.get('X-Conversation-ID')
+        conv_id_header = request.headers.get('X-Conversation-ID')
         conv = None
-        if conv_id:
-            conv = session.query(Conversation).filter_by(id=conv_id).first()
+        if conv_id_header:
+            conv = session.query(Conversation).filter_by(id=conv_id_header).first()
         
         if conv:
             conv.doc_hash = doc_hash
@@ -462,7 +454,8 @@ def upload():
         session.rollback()
         return jsonify({"error": f"An error occurred: {str(e)}"}), 500
     finally:
-        session.close() 
+        session.close()
+
 @app.route('/chat', methods=['POST'])
 def chat():
     data = request.json
@@ -510,6 +503,7 @@ def chat():
         return jsonify({"error": f"An error occurred: {str(e)}"}), 500
     finally:
         session.close()
+
 @app.route('/tutor', methods=['POST'])
 def tutor():
     data = request.json
@@ -542,8 +536,7 @@ def tutor():
             try:
                 fresh_conv = session.query(Conversation).filter_by(id=conversation_id).first()
                 is_first_tutor_message = not any(item[0] == 'gemini' for item in chat_history_list)
-
-                # Using the safe string-joining method to prevent syntax errors.
+                
                 prompt_parts = [
                     "## 1. CORE IDENTITY ##",
                     "You are Kortex, an elite AI mentor. Your personality is a blend of a brilliant, charismatic professor and a patient, insightful partner. You are here to help the user think deeper and learn faster.",
@@ -559,9 +552,8 @@ def tutor():
                     "OTHERWISE (for all subsequent messages), your task is to be a dynamic partner:",
                     "1. Analyze the user's latest message. Is it a response to your question or a new command?",
                     "2. If it's a response, continue the Socratic dialogue.",
-                    "3. If it's a command (e.g., \"make a quiz\"), be a proactive assistant. If the command is ambiguous, you may ask one or two clarifying questions. However, you must not get stuck in a loop. After gathering initial information, you must use your own intelligence to make a reasonable decision and then execute the command. It is better to provide a good result now than to ask endless questions.",
-                    "",
-                    "## 3. CONTEXT FOR YOUR MISSION ##",
+                    "3. If it's a command (e.g., \"make a quiz\"), be a proactive assistant. If the command is ambiguous, ask clarifying questions. **When the user provides specific parameters (like '15 questions'), you MUST adhere to them precisely.** After gathering sufficient information, execute the command. It is better to provide a good result now than to ask endless questions.",
+                    "## 3. CONTEXT FOR YOUR MISSION ##",   
                     f"- **is_first_tutor_message:** {is_first_tutor_message}",
                     f"- **Lesson Plan Roadmap:** {fresh_conv.tutor_curriculum}",
                     f"- **Conversation History:** {gemini_history}",
@@ -569,8 +561,21 @@ def tutor():
                     "",
                     "## 4. CRITICAL RULES (NON-NEGOTIABLE) ##",
                     "- **NO ROBOTIC INTROS:** NEVER start with \"Excellent!\", \"Great!\", \"Okay, so...\". Find a natural, conversational opening.",
-                    "- **PERFECT MCQ FORMATTING:** When creating a quiz, each option (A, B, C, D) MUST be on a new line.",
+                    "- **PERFECT MCQ FORMATTING TEMPLATE:** When creating a quiz, you MUST format it EXACTLY like this, replacing the bracketed content. Do not add any text before or after this structure:",
+                    "  1. [Question 1 Text]",
+                    "     A. [Option A]",
+                    "     B. [Option B]",
+                    "     C. [Option C]",
+                    "     D. [Option D]",
                     "",
+                    "  2. [Question 2 Text]",
+                    "     A. [Option A]",
+                    "     B. [Option B]",
+                    "     C. [Option C]",
+                    "     D. [Option D]",
+                    "", 
+                    
+                    
                     "## 5. THE USER'S LATEST MESSAGE ##",
                     f'"{message}"',
                     "",
@@ -593,16 +598,17 @@ def tutor():
                 session.commit()
 
             except Exception as e:
-                yield f"I'm sorry, a critical error occurred. Error: {str(e)}" 
+                yield f"I'm sorry, a critical error occurred. Error: {str(e)}"
         
         return Response(generate_tutor_response(), mimetype='text/plain')
     except Exception as e:
         session.rollback()
         return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
     finally:
-        session.close() 
-@app.route('/deep_dive', methods=['POST'])         
-def deep_dive():         
+        session.close()
+
+@app.route('/deep_dive', methods=['POST'])
+def deep_dive():
     if not SERPER_API_KEY: return jsonify({"error": "Serper API key not configured"}), 500
     data = request.json
     session = Session()
@@ -614,45 +620,37 @@ def deep_dive():
         doc_store = session.query(DocumentStore).filter_by(doc_hash=conv.doc_hash).first()
         if not doc_store: return jsonify({"error": "Document content not found."}), 404
 
-        loaded_chunks = pickle.loads(doc_store.chunks)
-        document_context = "\\n".join([chunk.page_content for chunk in loaded_chunks]) if loaded_chunks and isinstance(loaded_chunks[0], Document) else "\\n".join(loaded_chunks)
-        model = genai.GenerativeModel('gemini-1.5-flash-latest') 
+        document_context = "\\n".join([chunk.page_content for chunk in pickle.loads(doc_store.chunks)])
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
         chat_history_list = pickle.loads(conv.chat_history)
 
         def generate_deep_dive_response():
             try:
                 # Step 1: Generate Queries
-                query_gen_prompt = f"Analyze the document text. Generate a JSON array of 5 expert-level Google search queries to find competitors, risks, and market trends. Respond ONLY with the JSON array.\\n\\nDOCUMENT:{document_context[:4000]}"
-                query_response = model.generate_content(query_gen_prompt)    
-                # --- NEW: JSON Extractor for robustness ---
-                response_text = query_response.text
-                # Use regex to find a JSON array or object in the AI's response
-                json_match = re.search(r'\[.*\]|\{.*\}', response_text, re.DOTALL)
+                query_gen_prompt = f"Analyze document. Generate JSON array of 3 expert Google queries for risks & trends. ONLY JSON array.\\n\\nDOC:{document_context[:4000]}"
+                query_response = model.generate_content(query_gen_prompt)
                 
-                if not json_match:
-                    yield "Deep Dive failed: The AI was unable to generate valid search queries. Please try again."
-                    return # Stop the execution
-
+                response_text = query_response.text
+                json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+                if not json_match: raise ValueError("AI failed to generate search queries.")
                 json_str = json_match.group(0)
                 queries = json.loads(json_str)
-                # --- END OF NEW BLOCK --- 
 
                 # Step 2: Search Web
                 web_context = ""
-                yield "Gathering live intelligence...\\n"
+                yield "Gathering live intelligence...\\n\\n"
                 for query in queries:
                     yield f"Searching: '{query}'...\\n"
-                    params = { "q": query, "api_key": SERPER_API_KEY }
-                    search = GoogleSearch(params)
+                    search = GoogleSearch({ "q": query, "api_key": SERPER_API_KEY })
                     results = search.get_dict()
                     organic_results = results.get("organic_results", [])
-                    for result in organic_results[:2]:
+                    for result in organic_results[:3]:
                         if "snippet" in result: web_context += result["snippet"] + "\\n"
                 
                 # Step 3: Synthesize
                 yield "\\nSynthesizing intelligence brief...\\n\\n"
-                synthesis_prompt = f"You are a world-class business analyst. Synthesize the original document with live web intelligence. Create a concise, actionable brief. Use Markdown.\\n\\nORIGINAL DOC:{document_context[:4000]}\\n\\nLIVE WEB DATA:{web_context}\\n\\nBRIEF:"
-                synthesis_stream =model.generate_content(synthesis_prompt, stream=True)
+                synthesis_prompt = f"You are a world-class analyst. Synthesize original doc with live web data. Create a concise, actionable brief. Use Markdown.\\n\\nORIGINAL DOC:{document_context[:4000]}\\n\\nLIVE WEB DATA:{web_context}\\n\\nBRIEF:"
+                synthesis_stream = model.generate_content(synthesis_prompt, stream=True)
                 
                 full_response = ""
                 for chunk in synthesis_stream:
@@ -678,8 +676,6 @@ def deep_dive():
     finally:
         session.close()
 
-if __name__ == '__main__':  
-
-
-    port = int(os.environ.get('PORT', 5000))  
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port) 
