@@ -155,6 +155,9 @@ HTML_TEMPLATE = """
         @keyframes loader-dots { 0% { transform: scale(0); opacity: 0; } 50% { transform: scale(1); opacity: 1; } 100% { transform: scale(0); opacity: 0; } }
         .kortex-gradient { background: -webkit-linear-gradient(45deg, #38bdf8, #a78bfa, #f472b6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
         #send-button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .message-content {
+            white-space: pre-line;
+        } 
     </style>
 </head>
 <body class="text-gray-200">
