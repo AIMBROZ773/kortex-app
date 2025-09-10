@@ -206,6 +206,7 @@ HTML_TEMPLATE = """
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         let recognition;
         let isRecording = false;
+        marked.setOptions({ breaks: true }); 
 
         function scrollToBottom() { mainContent.scrollTop = mainContent.scrollHeight; }
         function updateSendButtonState() { sendButton.disabled = userInput.value.trim() === ''; }
