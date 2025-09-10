@@ -133,7 +133,6 @@ def get_vector_store(text_chunks, embeddings):
 def get_conversation_chain(vectorstore):
     llm = Ollama(base_url=OLLAMA_BASE_URL, model=CHAT_MODEL_NAME)
     return ConversationalRetrievalChain.from_llm(llm=llm, retriever=vectorstore.as_retriever())
-
 # --- UI TEMPLATE ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -157,7 +156,7 @@ HTML_TEMPLATE = """
         #send-button:disabled { opacity: 0.5; cursor: not-allowed; }
         .message-content {
             white-space: pre-line;
-        } 
+        }
     </style>
 </head>
 <body class="text-gray-200">
@@ -206,7 +205,8 @@ HTML_TEMPLATE = """
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         let recognition;
         let isRecording = false;
-        marked.setOptions({ breaks: true }); 
+
+        marked.setOptions({ breaks: true });
 
         function scrollToBottom() { mainContent.scrollTop = mainContent.scrollHeight; }
         function updateSendButtonState() { sendButton.disabled = userInput.value.trim() === ''; }
@@ -391,7 +391,8 @@ HTML_TEMPLATE = """
     </script>
 </body>
 </html>
-"""
+""" 
+
 
 # --- API ENDPOINTS ---
 @app.route('/')
