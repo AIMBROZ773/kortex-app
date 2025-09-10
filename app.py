@@ -614,7 +614,7 @@ def deep_dive():
             try:
                 # Step 1: Generate Queries
                 query_gen_prompt = f"Analyze the document text. Generate a JSON array of 5 expert-level Google search queries to find competitors, risks, and market trends. Respond ONLY with the JSON array.\\n\\nDOCUMENT:{document_context[:4000]}"
-                query_response = pro_model.generate_content(query_gen_prompt)
+                query_response = model.generate_content(query_gen_prompt)    
                 queries = json.loads(query_response.text.strip())
 
                 # Step 2: Search Web
