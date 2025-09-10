@@ -155,7 +155,7 @@ HTML_TEMPLATE = """
         .kortex-gradient { background: -webkit-linear-gradient(45deg, #38bdf8, #a78bfa, #f472b6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
         #send-button:disabled { opacity: 0.5; cursor: not-allowed; }
         .message-content {
-            white-space: pre-line;
+            white-space: pre-line;  
         }
     </style>
 </head>
@@ -205,8 +205,9 @@ HTML_TEMPLATE = """
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         let recognition;
         let isRecording = false;
-
         marked.setOptions({ breaks: true });
+
+        
 
         function scrollToBottom() { mainContent.scrollTop = mainContent.scrollHeight; }
         function updateSendButtonState() { sendButton.disabled = userInput.value.trim() === ''; }
@@ -339,8 +340,7 @@ HTML_TEMPLATE = """
             }
             setThinkingState(false);
         }
-
-        function addMessage(sender, text) {
+function addMessage(sender, text) {
             document.getElementById('welcome-message')?.remove();
             
             const messageWrapper = document.createElement('div');
@@ -355,6 +355,8 @@ HTML_TEMPLATE = """
             if(sender === 'You') {
                 contentDiv.textContent = text;
             } else {
+                // THE FINAL FIX: Brute-force the style directly onto the element
+                contentDiv.style.whiteSpace = 'pre-line'; 
                 contentDiv.innerHTML = marked.parse(text);
             }
             
@@ -363,7 +365,7 @@ HTML_TEMPLATE = """
             chatHistory.appendChild(messageWrapper);
             scrollToBottom();
             return messageWrapper;
-        }
+        }  
 
         function setThinkingState(isThinking, text = '') {
              let thinkingDiv = document.getElementById('thinking-indicator');
