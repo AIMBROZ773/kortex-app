@@ -3,6 +3,7 @@ import hashlib
 import pickle
 import io
 import uuid
+import json 
 import google.generativeai as genai
 from flask import Flask, request, jsonify, render_template_string, Response
 from flask_cors import CORS
