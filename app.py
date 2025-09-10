@@ -605,8 +605,9 @@ def deep_dive():
         doc_store = session.query(DocumentStore).filter_by(doc_hash=conv.doc_hash).first()
         if not doc_store: return jsonify({"error": "Document content not found."}), 404
 
-        document_context = "\\n".join(pickle.loads(doc_store.chunks))
-        pro_model = genai.GenerativeModel('gemini-1.5-pro-latest')
+        loaded_chunks = pickle.loads(doc_store.chunks)
+        document_context = "\\n".join([chunk.page_content for chunk in loaded_chunks]) if loaded_chunks and isinstance(loaded_chunks[0], Document) else "\\n".join(loaded_chunks)
+        model = genai.GenerativeModel('gemini-1.5-flash-latest') 
         chat_history_list = pickle.loads(conv.chat_history)
 
         def generate_deep_dive_response():
