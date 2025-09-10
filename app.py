@@ -161,8 +161,7 @@ HTML_TEMPLATE = """
              <h1 class="text-2xl font-bold text-white">Kortex</h1>
              <div id="feature-panel" class="flex items-center gap-2 hidden">
                  <button class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg transition-colors" onclick="startTutorSession()">Teach Me</button>
-                 <button id="deep-dive-button" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg transition-colors" onclick="startDeepDive()">Deep Dive</button>
-   
+                 <button id="deep-dive-button" class="bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-4 rounded-lg transition-colors" onclick="startDeepDive()">Deep Dive</button>
              </div>
         </header>
         <main class="flex-1 flex flex-col overflow-y-auto">
@@ -228,21 +227,16 @@ HTML_TEMPLATE = """
             const formData = new FormData();
             formData.append('file', fileInput.files[0]);
             
-            // The new, more descriptive thinking message
-            setThinkingState(true, 'Performing deep analysis... this may take several minutes for large documents.');
-            
+            setThinkingState(true, 'Performing deep analysis... this may take several minutes.');
             const response = await fetch('/upload', { method: 'POST', body: formData });
             const data = await response.json();
-            setThinkingState(false); // Remove the thinking message regardless of outcome
-            
+            setThinkingState(false);
             if(response.ok) {
                 conversationId = data.conversation_id;
                 chatHistory.innerHTML = '';
                 document.getElementById('welcome-message')?.remove();
                 document.getElementById('feature-panel').classList.remove('hidden');
-            } else { 
-                addMessage('Kortex', `Analysis failed: ${data.error}`); 
-            }
+            } else { addMessage('Kortex', `Analysis failed: ${data.error}`); }
         }
 
         async function startTutorSession() {
@@ -255,8 +249,9 @@ HTML_TEMPLATE = """
             });
             handleStreamedResponse(response);
         }
+
         async function startDeepDive() {
-            tutorModeActive = false; // Ensure we are not in tutor mode
+            tutorModeActive = false;
             setThinkingState(true, 'Initiating Deep Dive... gathering intelligence.');
             const response = await fetch('/deep_dive', {
                 method: 'POST',
@@ -339,28 +334,30 @@ HTML_TEMPLATE = """
             setThinkingState(false);
         }
 
-       function addMessage(sender, text) {
+        function addMessage(sender, text) {
             document.getElementById('welcome-message')?.remove();
             
             const messageWrapper = document.createElement('div');
             messageWrapper.className = `w-full flex py-2 ${sender === 'You' ? 'justify-end' : 'justify-start'}`;
             
             const messageBubble = document.createElement('div');
+            messageBubble.className = `max-w-xl p-3 rounded-xl ${sender === 'You' ? 'bg-blue-600 text-white' : ''}`;
             
-            if (sender === 'You') {
-                messageBubble.className = 'bg-blue-600 text-white p-3 rounded-xl max-w-xl';
-                // Use textContent for user messages to prevent Markdown rendering of their input
-                messageBubble.textContent = text;
-            } else { // Kortex
-                messageBubble.className = 'prose prose-invert max-w-none message-content';
-                messageBubble.innerHTML = marked.parse(text);
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'prose prose-invert max-w-none message-content';
+            
+            if(sender === 'You') {
+                contentDiv.textContent = text;
+            } else {
+                contentDiv.innerHTML = marked.parse(text);
             }
             
+            messageBubble.appendChild(contentDiv);
             messageWrapper.appendChild(messageBubble);
             chatHistory.appendChild(messageWrapper);
             scrollToBottom();
             return messageWrapper;
-        } 
+        }
 
         function setThinkingState(isThinking, text = '') {
              let thinkingDiv = document.getElementById('thinking-indicator');
@@ -594,81 +591,46 @@ def tutor():
         session.rollback()
         return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
     finally:
-        session.close() 
-if __name__ == '__main__':
-    @app.route('/deep_dive', methods=['POST'])
+        session.close()
+        @app.route('/deep_dive', methods=['POST'])
 def deep_dive():
-    if not SERPER_API_KEY:
-        return jsonify({"error": "Serper API key not configured"}), 500
-
+    if not SERPER_API_KEY: return jsonify({"error": "Serper API key not configured"}), 500
     data = request.json
     session = Session()
     try:
         conversation_id = data.get('conversation_id')
         conv = session.query(Conversation).filter_by(id=conversation_id).first()
-        if not conv or not conv.doc_hash:
-            return jsonify({"error": "A document must be associated with the conversation for a Deep Dive."}), 400
+        if not conv or not conv.doc_hash: return jsonify({"error": "A document must be associated for a Deep Dive."}), 400
 
         doc_store = session.query(DocumentStore).filter_by(doc_hash=conv.doc_hash).first()
-        if not doc_store:
-            return jsonify({"error": "Document content not found."}), 404
+        if not doc_store: return jsonify({"error": "Document content not found."}), 404
 
         document_context = "\\n".join(pickle.loads(doc_store.chunks))
-        
-        # Using the Pro model for this advanced feature
         pro_model = genai.GenerativeModel('gemini-1.5-pro-latest')
         chat_history_list = pickle.loads(conv.chat_history)
 
         def generate_deep_dive_response():
             try:
-                # --- STEP 1: GENERATE SEARCH QUERIES ---
-                query_generation_prompt = f"""
-                Analyze the following document text. Based on its content, generate a JSON array of 5 sophisticated, expert-level Google search queries that would find this document's competitors, market risks, and latest industry trends.
-                Respond ONLY with the JSON array of strings.
-                Example: ["latest trends in decentralized finance", "competitors to XYZ company's strategy"]
-
-                DOCUMENT TEXT:
-                ---
-                {document_context[:4000]}
-                ---
-                """
-                query_response = pro_model.generate_content(query_generation_prompt)
+                # Step 1: Generate Queries
+                query_gen_prompt = f"Analyze the document text. Generate a JSON array of 5 expert-level Google search queries to find competitors, risks, and market trends. Respond ONLY with the JSON array.\\n\\nDOCUMENT:{document_context[:4000]}"
+                query_response = pro_model.generate_content(query_gen_prompt)
                 queries = json.loads(query_response.text.strip())
 
-                # --- STEP 2: EXECUTE WEB SEARCHES ---
+                # Step 2: Search Web
                 web_context = ""
-                yield "Gathering live intelligence from the web...\\n"
+                yield "Gathering live intelligence...\\n"
                 for query in queries:
-                    yield f"Searching for: '{query}'...\\n"
-                    search = GoogleSearch({
-                        "q": query,
-                        "api_key": SERPER_API_KEY
-                    })
+                    yield f"Searching: '{query}'...\\n"
+                    params = { "q": query, "api_key": SERPER_API_KEY }
+                    search = GoogleSearch(params)
                     results = search.get_dict()
                     organic_results = results.get("organic_results", [])
-                    for result in organic_results[:2]: # Get top 2 results
-                        if "snippet" in result:
-                            web_context += result["snippet"] + "\\n"
+                    for result in organic_results[:2]:
+                        if "snippet" in result: web_context += result["snippet"] + "\\n"
                 
-                # --- STEP 3: SYNTHESIZE AND REPORT ---
+                # Step 3: Synthesize
                 yield "\\nSynthesizing intelligence brief...\\n\\n"
-                synthesis_prompt = f"""
-                You are a world-class business analyst. Your task is to synthesize the user's original document with live intelligence gathered from the web.
-                Create a concise, actionable intelligence brief. Use Markdown for formatting.
-
-                ORIGINAL DOCUMENT CONTEXT:
-                ---
-                {document_context[:4000]}
-                ---
-
-                LIVE WEB INTELLIGENCE:
-                ---
-                {web_context}
-                ---
-
-                INTELLIGENCE BRIEF:
-                """
-
+                synthesis_prompt = f"You are a world-class business analyst. Synthesize the original document with live web intelligence. Create a concise, actionable brief. Use Markdown.\\n\\nORIGINAL DOC:{document_context[:4000]}\\n\\nLIVE WEB DATA:{web_context}\\n\\nBRIEF:"
                 synthesis_stream = pro_model.generate_content(synthesis_prompt, stream=True)
                 
                 full_response = ""
@@ -685,7 +647,7 @@ def deep_dive():
                 session.commit()
 
             except Exception as e:
-                yield f"A critical error occurred during the Deep Dive. Error: {str(e)}"
+                yield f"A critical error occurred during Deep Dive. Error: {str(e)}"
 
         return Response(generate_deep_dive_response(), mimetype='text/plain')
     
@@ -694,5 +656,9 @@ def deep_dive():
         return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
     finally:
         session.close()
+
+if __name__ == '__main__':  
+
+
     port = int(os.environ.get('PORT', 5000))  
     app.run(host='0.0.0.0', port=port) 
