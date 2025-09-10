@@ -1,4 +1,4 @@
-## KORTEX V1.5 - FINAL MASTER BLUEPRINT ##
+## KORTEX V1.5 - FINAL, PERFECTED BLUEPRINT ##
 import os
 import hashlib
 import pickle
@@ -18,7 +18,6 @@ from werkzeug.utils import secure_filename
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_ollama.embeddings import OllamaEmbeddings
-from langchain.chains import ConversationalRetrievalChain
 from langchain_ollama.llms import OllamaLLM
 from sqlalchemy import create_engine, Column, String, LargeBinary, DateTime, func, Text
 from sqlalchemy.dialects.postgresql import UUID
@@ -117,10 +116,6 @@ def get_ollama_embeddings():
 
 def get_vector_store(text_chunks, embeddings):
     return FAISS.from_texts(texts=text_chunks, embedding=embeddings)
-
-def get_conversation_chain(vectorstore):
-    llm = OllamaLLM(base_url=OLLAMA_BASE_URL, model=CHAT_MODEL_NAME)
-    return ConversationalRetrievalChain.from_llm(llm=llm, retriever=vectorstore.as_retriever())
 
 # --- UI TEMPLATE ---
 HTML_TEMPLATE = """
@@ -230,14 +225,11 @@ HTML_TEMPLATE = """
             setThinkingState(false);
             if(response.ok) {
                 conversationId = data.conversation_id;
-                if(!document.getElementById('welcome-message')) {
-                    // Chat is ongoing, don't clear
-                } else {
+                if(document.getElementById('welcome-message')) {
                     chatHistory.innerHTML = '';
                 }
                 document.getElementById('welcome-message')?.remove();
                 document.getElementById('feature-panel').classList.remove('hidden');
-                addMessage('Kortex', `**${fileInput.files[0].name}** analyzed. Research Mode activated.`);
             } else { addMessage('Kortex', `Analysis failed: ${data.error}`); }
         }
 
@@ -483,14 +475,23 @@ def chat():
 
         embeddings = get_ollama_embeddings()
         vectorstore = FAISS.deserialize_from_bytes(embeddings=embeddings, serialized=pickle.loads(doc_store.faiss_index), allow_dangerous_deserialization=True)
-        chain = get_conversation_chain(vectorstore)
-        langchain_history_format = [(item[1], item[2]) for item in chat_history_list if len(item) == 3 and item[0] == 'langchain']
-
+        
+        # Simplified RAG chain
+        retriever = vectorstore.as_retriever()
+        relevant_docs = retriever.get_relevant_documents(message)
+        context = "\\n".join([doc.page_content for doc in relevant_docs])
+        
+        prompt = f"""Answer the user's question based ONLY on the following context.
+        Context: {context}
+        Question: {message}
+        Answer:"""
+        
+        llm = OllamaLLM(base_url=OLLAMA_BASE_URL, model=CHAT_MODEL_NAME)
+        
         def generate_doc_chat():
-            response = chain({"question": message, "chat_history": langchain_history_format})
-            answer = response.get('answer', 'Sorry, I could not find an answer.')
-            yield answer
-            chat_history_list.append(('langchain', message, answer))
+            response = llm.invoke(prompt)
+            yield response
+            chat_history_list.append(('langchain', message, response))
             conv_to_update = session.merge(conv)
             conv_to_update.chat_history = pickle.dumps(chat_history_list)
             session.commit()
@@ -550,7 +551,7 @@ def tutor():
                     "OTHERWISE (for all subsequent messages), your task is to be a dynamic partner:",
                     "1. Analyze the user's latest message. Is it a response to your question or a new command?",
                     "2. If it's a response, continue the Socratic dialogue.",
-                    "3. If it's a command (e.g., \"make a quiz\"), be a proactive assistant. If the command is ambiguous, ask clarifying questions. **When the user provides specific parameters (like '15 questions'), you MUST adhere to them precisely.** After gathering sufficient information, execute the command. It is better to provide a good result now than to ask endless questions.",
+                     "3. If it's a command (e.g., \"make a quiz\"), be a proactive assistant. If the command is ambiguous, ask clarifying questions. **When the user provides specific parameters (like '15 questions'), you MUST adhere to them precisely.** After gathering sufficient information, execute the command. It is better to provide a good result now than to ask endless questions.",
 
                    
                     "",  
@@ -562,7 +563,7 @@ def tutor():
                     "",
                     "## 4. CRITICAL RULES (NON-NEGOTIABLE) ##",
                     "- **NO ROBOTIC INTROS:** NEVER start with \"Excellent!\", \"Great!\", \"Okay, so...\". Find a natural, conversational opening.",
-                    "- **PERFECT MCQ FORMATTING TEMPLATE:** When creating a quiz, you MUST format it EXACTLY like this, replacing the bracketed content. Do not add any text before or after this structure:",
+                     "- **PERFECT MCQ FORMATTING TEMPLATE:** When creating a quiz, you MUST format it EXACTLY like this, replacing the bracketed content. Do not add any text before or after this structure:",
                     "  1. [Question 1 Text]",
                     "     A. [Option A]",
                     "     B. [Option B]",
@@ -575,8 +576,7 @@ def tutor():
                     "     C. [Option C]",
                     "     D. [Option D]",
                     "", 
-
-                  
+                   
                     "## 5. THE USER'S LATEST MESSAGE ##",
                     f'"{message}"',
                     "",
