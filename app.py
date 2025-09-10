@@ -24,6 +24,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base, sessionmaker
 from langchain_core.documents import Document
 from sqlalchemy import desc
+from serpapi import GoogleSearch
 
 app = Flask(__name__)
 CORS(app)
@@ -43,6 +44,7 @@ else:
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
+    SERPER_API_KEY = os.environ.get("SERPER_API_KEY")
 
 OLLAMA_BASE_URL = "http://host.docker.internal:11434" if os.environ.get("DOCKER_ENV") == "true" else "http://localhost:11434"
 CHAT_MODEL_NAME = "llama3"
@@ -159,6 +161,8 @@ HTML_TEMPLATE = """
              <h1 class="text-2xl font-bold text-white">Kortex</h1>
              <div id="feature-panel" class="flex items-center gap-2 hidden">
                  <button class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg transition-colors" onclick="startTutorSession()">Teach Me</button>
+                 <button id="deep-dive-button" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg transition-colors" onclick="startDeepDive()">Deep Dive</button>
+   
              </div>
         </header>
         <main class="flex-1 flex flex-col overflow-y-auto">
@@ -248,6 +252,16 @@ HTML_TEMPLATE = """
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ conversation_id: conversationId, message: "Let's begin. Please start with the first topic." })
+            });
+            handleStreamedResponse(response);
+        }
+        async function startDeepDive() {
+            tutorModeActive = false; // Ensure we are not in tutor mode
+            setThinkingState(true, 'Initiating Deep Dive... gathering intelligence.');
+            const response = await fetch('/deep_dive', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ conversation_id: conversationId })
             });
             handleStreamedResponse(response);
         }
@@ -582,5 +596,103 @@ def tutor():
     finally:
         session.close() 
 if __name__ == '__main__':
+    @app.route('/deep_dive', methods=['POST'])
+def deep_dive():
+    if not SERPER_API_KEY:
+        return jsonify({"error": "Serper API key not configured"}), 500
+
+    data = request.json
+    session = Session()
+    try:
+        conversation_id = data.get('conversation_id')
+        conv = session.query(Conversation).filter_by(id=conversation_id).first()
+        if not conv or not conv.doc_hash:
+            return jsonify({"error": "A document must be associated with the conversation for a Deep Dive."}), 400
+
+        doc_store = session.query(DocumentStore).filter_by(doc_hash=conv.doc_hash).first()
+        if not doc_store:
+            return jsonify({"error": "Document content not found."}), 404
+
+        document_context = "\\n".join(pickle.loads(doc_store.chunks))
+        
+        # Using the Pro model for this advanced feature
+        pro_model = genai.GenerativeModel('gemini-1.5-pro-latest')
+        chat_history_list = pickle.loads(conv.chat_history)
+
+        def generate_deep_dive_response():
+            try:
+                # --- STEP 1: GENERATE SEARCH QUERIES ---
+                query_generation_prompt = f"""
+                Analyze the following document text. Based on its content, generate a JSON array of 5 sophisticated, expert-level Google search queries that would find this document's competitors, market risks, and latest industry trends.
+                Respond ONLY with the JSON array of strings.
+                Example: ["latest trends in decentralized finance", "competitors to XYZ company's strategy"]
+
+                DOCUMENT TEXT:
+                ---
+                {document_context[:4000]}
+                ---
+                """
+                query_response = pro_model.generate_content(query_generation_prompt)
+                queries = json.loads(query_response.text.strip())
+
+                # --- STEP 2: EXECUTE WEB SEARCHES ---
+                web_context = ""
+                yield "Gathering live intelligence from the web...\\n"
+                for query in queries:
+                    yield f"Searching for: '{query}'...\\n"
+                    search = GoogleSearch({
+                        "q": query,
+                        "api_key": SERPER_API_KEY
+                    })
+                    results = search.get_dict()
+                    organic_results = results.get("organic_results", [])
+                    for result in organic_results[:2]: # Get top 2 results
+                        if "snippet" in result:
+                            web_context += result["snippet"] + "\\n"
+                
+                # --- STEP 3: SYNTHESIZE AND REPORT ---
+                yield "\\nSynthesizing intelligence brief...\\n\\n"
+                synthesis_prompt = f"""
+                You are a world-class business analyst. Your task is to synthesize the user's original document with live intelligence gathered from the web.
+                Create a concise, actionable intelligence brief. Use Markdown for formatting.
+
+                ORIGINAL DOCUMENT CONTEXT:
+                ---
+                {document_context[:4000]}
+                ---
+
+                LIVE WEB INTELLIGENCE:
+                ---
+                {web_context}
+                ---
+
+                INTELLIGENCE BRIEF:
+                """
+
+                synthesis_stream = pro_model.generate_content(synthesis_prompt, stream=True)
+                
+                full_response = ""
+                for chunk in synthesis_stream:
+                    if chunk.text:
+                        yield chunk.text
+                        full_response += chunk.text
+                
+                chat_history_list.append(('gemini', 'user', "Deep Dive Analysis"))
+                chat_history_list.append(('gemini', 'model', full_response))
+                
+                conv_to_update = session.merge(conv)
+                conv_to_update.chat_history = pickle.dumps(chat_history_list)
+                session.commit()
+
+            except Exception as e:
+                yield f"A critical error occurred during the Deep Dive. Error: {str(e)}"
+
+        return Response(generate_deep_dive_response(), mimetype='text/plain')
+    
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
+    finally:
+        session.close()
     port = int(os.environ.get('PORT', 5000))  
     app.run(host='0.0.0.0', port=port) 
