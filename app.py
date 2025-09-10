@@ -591,9 +591,9 @@ def tutor():
         session.rollback()
         return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
     finally:
-        session.close()
-        @app.route('/deep_dive', methods=['POST'])
-def deep_dive():
+        session.close() 
+@app.route('/deep_dive', methods=['POST'])         
+def deep_dive():         
     if not SERPER_API_KEY: return jsonify({"error": "Serper API key not configured"}), 500
     data = request.json
     session = Session()
