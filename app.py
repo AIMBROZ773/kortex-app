@@ -4,6 +4,7 @@ import pickle
 import io
 import uuid
 import json 
+import re
 import google.generativeai as genai
 from flask import Flask, request, jsonify, render_template_string, Response
 from flask_cors import CORS
@@ -616,7 +617,18 @@ def deep_dive():
                 # Step 1: Generate Queries
                 query_gen_prompt = f"Analyze the document text. Generate a JSON array of 5 expert-level Google search queries to find competitors, risks, and market trends. Respond ONLY with the JSON array.\\n\\nDOCUMENT:{document_context[:4000]}"
                 query_response = model.generate_content(query_gen_prompt)    
-                queries = json.loads(query_response.text.strip())
+                # --- NEW: JSON Extractor for robustness ---
+                response_text = query_response.text
+                # Use regex to find a JSON array or object in the AI's response
+                json_match = re.search(r'\[.*\]|\{.*\}', response_text, re.DOTALL)
+                
+                if not json_match:
+                    yield "Deep Dive failed: The AI was unable to generate valid search queries. Please try again."
+                    return # Stop the execution
+
+                json_str = json_match.group(0)
+                queries = json.loads(json_str)
+                # --- END OF NEW BLOCK --- 
 
                 # Step 2: Search Web
                 web_context = ""
@@ -633,7 +645,7 @@ def deep_dive():
                 # Step 3: Synthesize
                 yield "\\nSynthesizing intelligence brief...\\n\\n"
                 synthesis_prompt = f"You are a world-class business analyst. Synthesize the original document with live web intelligence. Create a concise, actionable brief. Use Markdown.\\n\\nORIGINAL DOC:{document_context[:4000]}\\n\\nLIVE WEB DATA:{web_context}\\n\\nBRIEF:"
-                synthesis_stream = pro_model.generate_content(synthesis_prompt, stream=True)
+                synthesis_stream =model.generate_content(synthesis_prompt, stream=True)
                 
                 full_response = ""
                 for chunk in synthesis_stream:
