@@ -17,9 +17,9 @@ import docx
 from werkzeug.utils import secure_filename
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import OllamaEmbeddings
+from langchain_ollama.embeddings import OllamaEmbeddings
 from langchain.chains import ConversationalRetrievalChain
-from langchain_community.llms import Ollama
+from langchain_ollama.llms import OllamaLLM
 from sqlalchemy import create_engine, Column, String, LargeBinary, DateTime, func, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -119,7 +119,7 @@ def get_vector_store(text_chunks, embeddings):
     return FAISS.from_texts(texts=text_chunks, embedding=embeddings)
 
 def get_conversation_chain(vectorstore):
-    llm = Ollama(base_url=OLLAMA_BASE_URL, model=CHAT_MODEL_NAME)
+    llm = OllamaLLM(base_url=OLLAMA_BASE_URL, model=CHAT_MODEL_NAME)
     return ConversationalRetrievalChain.from_llm(llm=llm, retriever=vectorstore.as_retriever())
 
 # --- UI TEMPLATE ---
@@ -230,15 +230,14 @@ HTML_TEMPLATE = """
             setThinkingState(false);
             if(response.ok) {
                 conversationId = data.conversation_id;
-                // Don't clear history if a conversation is already active
-                if(document.getElementById('welcome-message')) {
+                if(!document.getElementById('welcome-message')) {
+                    // Chat is ongoing, don't clear
+                } else {
                     chatHistory.innerHTML = '';
                 }
                 document.getElementById('welcome-message')?.remove();
                 document.getElementById('feature-panel').classList.remove('hidden');
-                if (chatHistory.innerHTML === '') { // Only add message if chat is new
-                   addMessage('Kortex', `**${fileInput.files[0].name}** analyzed and ready. You are now in Research Mode.`);
-                }
+                addMessage('Kortex', `**${fileInput.files[0].name}** analyzed. Research Mode activated.`);
             } else { addMessage('Kortex', `Analysis failed: ${data.error}`); }
         }
 
@@ -344,8 +343,7 @@ HTML_TEMPLATE = """
             messageWrapper.className = `w-full flex py-2 ${sender === 'You' ? 'justify-end' : 'justify-start'}`;
             
             const messageBubble = document.createElement('div');
-            // User gets a box, AI does not, for the Gemini look
-            messageBubble.className = `max-w-xl ${sender === 'You' ? 'bg-blue-600 text-white p-3 rounded-xl' : ''}`;
+            messageBubble.className = `max-w-xl p-3 rounded-xl ${sender === 'You' ? 'bg-blue-600 text-white' : ''}`;
             
             const contentDiv = document.createElement('div');
             contentDiv.className = 'prose prose-invert max-w-none message-content';
@@ -470,7 +468,7 @@ def chat():
         chat_history_list = pickle.loads(conv.chat_history)
         
         if not conv.doc_hash:
-             llm = Ollama(base_url=OLLAMA_BASE_URL, model=CHAT_MODEL_NAME)
+             llm = OllamaLLM(base_url=OLLAMA_BASE_URL, model=CHAT_MODEL_NAME)
              def generate_general():
                  response = llm.invoke(message)
                  yield response
@@ -553,7 +551,10 @@ def tutor():
                     "1. Analyze the user's latest message. Is it a response to your question or a new command?",
                     "2. If it's a response, continue the Socratic dialogue.",
                     "3. If it's a command (e.g., \"make a quiz\"), be a proactive assistant. If the command is ambiguous, ask clarifying questions. **When the user provides specific parameters (like '15 questions'), you MUST adhere to them precisely.** After gathering sufficient information, execute the command. It is better to provide a good result now than to ask endless questions.",
-                    "## 3. CONTEXT FOR YOUR MISSION ##",   
+
+                   
+                    "",  
+                    "## 3. CONTEXT FOR YOUR MISSION ##",
                     f"- **is_first_tutor_message:** {is_first_tutor_message}",
                     f"- **Lesson Plan Roadmap:** {fresh_conv.tutor_curriculum}",
                     f"- **Conversation History:** {gemini_history}",
@@ -574,8 +575,8 @@ def tutor():
                     "     C. [Option C]",
                     "     D. [Option D]",
                     "", 
-                    
-                    
+
+                  
                     "## 5. THE USER'S LATEST MESSAGE ##",
                     f'"{message}"',
                     "",
@@ -638,22 +639,22 @@ def deep_dive():
 
                 # Step 2: Search Web
                 web_context = ""
-                yield "Gathering live intelligence from the web...<br>"
+                yield "Gathering live intelligence...<br>"
                 for query in queries:
                     yield f"Searching for: '{query}'...<br>"
                     search = GoogleSearch({ "q": query, "api_key": SERPER_API_KEY })
                     results = search.get_dict()
                     organic_results = results.get("organic_results", [])
                     for result in organic_results[:3]:
-                        if "snippet" in result: web_context += result["snippet"] + "<br>"  
+                        if "snippet" in result: web_context += result["snippet"] + "<br>"
                 
                 # Step 3: Synthesize
-                yield "<br>Synthesizing intelligence brief...<br><br>"  
+                yield "<br>Synthesizing intelligence brief...<br><br>"
                 synthesis_prompt = f"You are a world-class analyst. Synthesize original doc with live web data. Create a concise, actionable brief. Use Markdown.\\n\\nORIGINAL DOC:{document_context[:4000]}\\n\\nLIVE WEB DATA:{web_context}\\n\\nBRIEF:"
                 synthesis_stream = model.generate_content(synthesis_prompt, stream=True)
                 
                 full_response = ""
-                for chunk in synthesis_stream: 
+                for chunk in synthesis_stream:
                     if chunk.text:
                         yield chunk.text
                         full_response += chunk.text
@@ -678,4 +679,4 @@ def deep_dive():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port) 
+    app.run(host='0.0.0.0', port=port)
