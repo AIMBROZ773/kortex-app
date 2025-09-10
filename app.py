@@ -638,22 +638,22 @@ def deep_dive():
 
                 # Step 2: Search Web
                 web_context = ""
-                yield "Gathering live intelligence...\\n\\n"
+                yield "Gathering live intelligence from the web...<br>"
                 for query in queries:
-                    yield f"Searching: '{query}'...\\n"
+                    yield f"Searching for: '{query}'...<br>"
                     search = GoogleSearch({ "q": query, "api_key": SERPER_API_KEY })
                     results = search.get_dict()
                     organic_results = results.get("organic_results", [])
                     for result in organic_results[:3]:
-                        if "snippet" in result: web_context += result["snippet"] + "\\n"
+                        if "snippet" in result: web_context += result["snippet"] + "<br>"  
                 
                 # Step 3: Synthesize
-                yield "\\nSynthesizing intelligence brief...\\n\\n"
+                yield "<br>Synthesizing intelligence brief...<br><br>"  
                 synthesis_prompt = f"You are a world-class analyst. Synthesize original doc with live web data. Create a concise, actionable brief. Use Markdown.\\n\\nORIGINAL DOC:{document_context[:4000]}\\n\\nLIVE WEB DATA:{web_context}\\n\\nBRIEF:"
                 synthesis_stream = model.generate_content(synthesis_prompt, stream=True)
                 
                 full_response = ""
-                for chunk in synthesis_stream:
+                for chunk in synthesis_stream: 
                     if chunk.text:
                         yield chunk.text
                         full_response += chunk.text
