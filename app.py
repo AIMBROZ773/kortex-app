@@ -245,29 +245,17 @@ HTML_TEMPLATE = """
             handleStreamedResponse(response);
         }
 
-        async function startDeepDive() {
+       async function startDeepDive() {
             tutorModeActive = false;
-            setThinkingState(true, 'Initiating Deep Dive... gathering and synthesizing intelligence.');
-            try {
-                const response = await fetch('/deep_dive', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ conversation_id: conversationId })
-                });
-                
-                setThinkingState(false);
-                const data = await response.json();
-
-                if (response.ok) {
-                    handleDeepDiveResponse(data); // Call the new JSON handler
-                } else {
-                    addMessage('Kortex', `Deep Dive failed: ${data.error}`);
-                }
-            } catch (error) {
-                setThinkingState(false);
-                addMessage('Kortex', 'A critical network error occurred during the Deep Dive.');
-            }
-        }
+            setThinkingState(true, 'Initiating Deep Dive... gathering intelligence.');
+            const response = await fetch('/deep_dive', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ conversation_id: conversationId })
+            });
+            // This is the correct function to handle a streaming response
+            handleStreamedResponse(response);
+        } 
         function handleDeepDiveResponse(data) {
             chatHistory.innerHTML = ''; // Clear the window for the new dashboard
             
