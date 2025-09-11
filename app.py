@@ -247,15 +247,76 @@ HTML_TEMPLATE = """
 
         async function startDeepDive() {
             tutorModeActive = false;
-            setThinkingState(true, 'Initiating Deep Dive... gathering intelligence.');
-            const response = await fetch('/deep_dive', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ conversation_id: conversationId })
-            });
-            handleStreamedResponse(response);
-        }
+            setThinkingState(true, 'Initiating Deep Dive... gathering and synthesizing intelligence.');
+            try {
+                const response = await fetch('/deep_dive', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ conversation_id: conversationId })
+                });
+                
+                setThinkingState(false);
+                const data = await response.json();
 
+                if (response.ok) {
+                    handleDeepDiveResponse(data); // Call the new JSON handler
+                } else {
+                    addMessage('Kortex', `Deep Dive failed: ${data.error}`);
+                }
+            } catch (error) {
+                setThinkingState(false);
+                addMessage('Kortex', 'A critical network error occurred during the Deep Dive.');
+            }
+        }
+        function handleDeepDiveResponse(data) {
+            chatHistory.innerHTML = ''; // Clear the window for the new dashboard
+            
+            let reportHTML = '<div class="prose prose-invert max-w-none space-y-4">';
+            
+            reportHTML += '<h2>Deep Dive: Actionable Brief</h2>';
+            
+            if (data.executive_summary) {
+                reportHTML += `<h3>Executive Summary</h3><p>${data.executive_summary}</p>`;
+            }
+
+            if (data.key_findings && data.key_findings.length > 0) {
+                reportHTML += '<h3>Key Findings (from Live Web Data)</h3><ul>';
+                data.key_findings.forEach(finding => {
+                    reportHTML += `<li>${finding.insight} (<a href="${finding.source}" target="_blank" class="text-blue-400 hover:underline">Source</a>)</li>`;
+                });
+                reportHTML += '</ul>';
+            }
+
+            if (data.swot_analysis) {
+                reportHTML += '<h3>SWOT Analysis</h3>';
+                const swot = data.swot_analysis;
+                if (swot.strengths && swot.strengths.length > 0) {
+                    reportHTML += '<h4>Strengths</h4><ul>' + swot.strengths.map(s => `<li>${s}</li>`).join('') + '</ul>';
+                }
+                if (swot.weaknesses && swot.weaknesses.length > 0) {
+                    reportHTML += '<h4>Weaknesses</h4><ul>' + swot.weaknesses.map(w => `<li>${w}</li>`).join('') + '</ul>';
+                }
+                if (swot.opportunities && swot.opportunities.length > 0) {
+                    reportHTML += '<h4>Opportunities</h4><ul>' + swot.opportunities.map(o => `<li>${o}</li>`).join('') + '</ul>';
+                }
+                if (swot.threats && swot.threats.length > 0) {
+                    reportHTML += '<h4>Threats</h4><ul>' + swot.threats.map(t => `<li>${t}</li>`).join('') + '</ul>';
+                }
+            }
+
+            if (data.actionable_recommendations && data.actionable_recommendations.length > 0) {
+                reportHTML += '<h3>Actionable Recommendations</h3><ul>';
+                data.actionable_recommendations.forEach(rec => {
+                    reportHTML += `<li>${rec}</li>`;
+                });
+                reportHTML += '</ul>';
+            }
+            
+            reportHTML += '</div>';
+            
+            chatHistory.innerHTML = reportHTML;
+            scrollToBottom();
+        }   
         userInput.addEventListener('keydown', (event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault();
@@ -322,12 +383,29 @@ HTML_TEMPLATE = """
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
+                
                 accumulatedText += decoder.decode(value, {stream: true});
-                contentDiv.innerHTML = marked.parse(accumulatedText);
+
+                if (accumulatedText.includes("FINAL_JSON:")) {
+                    // We received the final data payload
+                    const jsonPart = accumulatedText.split("FINAL_JSON:")[1];
+                    try {
+                        const data = JSON.parse(jsonPart);
+                        handleDeepDiveResponse(data); // Call the dashboard renderer
+                        aiMessageContainer.remove(); // Remove the temporary status message container
+                    } catch (e) {
+                        // It might be an incomplete JSON string, wait for more chunks
+                        // Or display the partial status update
+                        contentDiv.innerHTML = marked.parse(accumulatedText.split("FINAL_JSON:")[0]);
+                    }
+                } else {
+                     // It's a normal status update, display it
+                     contentDiv.innerHTML = marked.parse(accumulatedText);
+                }
                 scrollToBottom();
             }
             setThinkingState(false);
-        }
+        } 
 
         function addMessage(sender, text) {
             document.getElementById('welcome-message')?.remove();
@@ -477,8 +555,7 @@ def chat():
         if not conv.doc_hash:
              llm = OllamaLLM(base_url=OLLAMA_BASE_URL, model=CHAT_MODEL_NAME)
              def generate_general():
-                 # For general chat, we can build a simple history string
-                 history_string = "\\n".join([f"User: {turn[1]}\\nAI: {turn[2]}" for turn in chat_history_list if turn[0] == 'langchain'])
+                 history_string = "\\n".join([f"User: {turn[1]}\\nAI: {turn[2]}" for turn in chat_history_list if len(turn) == 3 and turn[0] == 'langchain'])
                  prompt = f"Continue the conversation naturally.\\n{history_string}\\nUser: {message}\\nAI:"
                  response = llm.invoke(prompt)
                  yield response
@@ -488,51 +565,46 @@ def chat():
                  session.commit()
              return Response(generate_general(), mimetype='text/plain')
 
-        # Document chat (with conversational memory)
+        # Document chat (with intelligent context switching)
         doc_store = session.query(DocumentStore).filter_by(doc_hash=conv.doc_hash).first()
         if not doc_store: return jsonify({"error": "Document data not found"}), 404
 
         embeddings = get_ollama_embeddings()
-        vectorstore = FAISS.deserialize_from_bytes(embeddings=embeddings, serialized=doc_store.faiss_index, allow_dangerous_deserialization=True) 
+        vectorstore = FAISS.deserialize_from_bytes(embeddings=embeddings, serialized=doc_store.faiss_index, allow_dangerous_deserialization=True)
         
         def generate_doc_chat():
-            # Step 1: Manually retrieve relevant context 
+            # Step 1: Get both conversational history and new document context
             retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
             relevant_docs = retriever.get_relevant_documents(message)
             context = "\\n---\\n".join([doc.page_content for doc in relevant_docs])
             
-            # Step 2: Get recent chat history
-            recent_history = chat_history_list[-4:] # Get last 2 turns
+            recent_history = chat_history_list[-4:]
             history_string = ""
             for turn in recent_history:
-                speaker = "User" if turn[0] == 'user' or (len(turn) > 1 and turn[1] == message) else "AI"
-                content = turn[2] if len(turn) > 2 else turn[1]
-                history_string += f"{speaker}: {content}\\n"
+                speaker = "User" if 'user' in turn else "AI"
+                content_index = 2 if len(turn) > 2 else 1
+                history_string += f"{speaker}: {turn[content_index]}\\n"
 
-
-            # Step 3: Build a simple, clean prompt with memory
+            # Step 2: Build the new, intelligent prompt
             prompt_parts = [
-                "You are Kortex, a helpful AI assistant. Answer the user's question based on the conversation history and the provided document context.",
-                "If the question is about the most recent thing the AI said, use the history to understand that.",
+                "You are Kortex, an intelligent AI assistant. Your goal is to answer the user's question.",
+                "You have two sources of information: the RECENT CONVERSATION HISTORY and additional CONTEXT FROM A DOCUMENT.",
                 "",
-                "CONVERSATION HISTORY:",
-                "---",
-                history_string,
-                "---",
+                "**Your first priority is to understand the flow of conversation.** Analyze the user's QUESTION. Can it be answered using the RECENT CONVERSATION HISTORY? (e.g., if the user asks 'what do you mean?' or 'tell me more about that', they are referring to your last message).",
+                "If the question is a direct follow-up to the conversation, answer it using the history. You may also use the document context if it adds value.",
+                "If the question is about a completely new topic, prioritize using the CONTEXT FROM A DOCUMENT to find the answer.",
                 "",
-                "CONTEXT FROM DOCUMENT:",
-                "---",
-                context,
-                "---",
+                f"RECENT CONVERSATION HISTORY:\\n---\\n{history_string}---",
                 "",
-                "QUESTION:",
-                message,
+                f"CONTEXT FROM DOCUMENT:\\n---\\n{context}---",
+                "",
+                f"QUESTION: {message}",
                 "",
                 "ANSWER:"
             ]
             prompt = "\\n".join(prompt_parts)
             
-            # Step 4: Call the LLM directly
+            # Step 3: Call the LLM
             llm = OllamaLLM(base_url=OLLAMA_BASE_URL, model=CHAT_MODEL_NAME)
             response = llm.invoke(prompt)
             yield response
@@ -551,7 +623,7 @@ def chat():
         print("-------------------------------")
         return jsonify({"error": "A detailed error occurred. Check server logs."}), 500
     finally:
-        session.close()
+        session.close() 
 
 @app.route('/tutor', methods=['POST'])
 def tutor():
@@ -673,25 +745,27 @@ def deep_dive():
         loaded_chunks = pickle.loads(doc_store.chunks)
         document_context = "\\n".join([chunk.page_content for chunk in loaded_chunks]) if loaded_chunks and isinstance(loaded_chunks[0], Document) else "\\n".join(loaded_chunks)
         
-        # NOTE: Using the PRO model for this high-level reasoning task.
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')   
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
         chat_history_list = pickle.loads(conv.chat_history)
 
         def generate_deep_dive_response():
             try:
                 # Step 1: Generate Queries
-                query_gen_prompt = f"Analyze document. Generate JSON array of 3 expert Google queries for risks & trends. ONLY JSON array.\\n\\nDOC:{document_context[:4000]}"
-                query_response = model.generate_content(query_gen_prompt)
-                response_text = query_response.text
-                json_match = re.search(r'\\[.*\\]|\\{.*\\}', response_text, re.DOTALL)
-                if not json_match: raise ValueError("AI failed to generate search queries.")
-                json_str = json_match.group(0)
-                queries = json.loads(json_str)
+                yield "Stage 1: Extracting key topics...<br>"
+                topic_extractor_prompt = f"Read the document. Identify 5 important topics/keywords. Respond ONLY with a comma-separated list.\\n\\nDOCUMENT:\\n{document_context[:4000]}"
+                topic_response = model.generate_content(topic_extractor_prompt)
+                keywords = [keyword.strip() for keyword in topic_response.text.split(',') if keyword.strip()]
 
-                # Step 2: Search Web & Collect Text and Image Data
+                queries = []
+                yield "Stage 2: Crafting expert-level search queries...<br>"
+                for keyword in keywords[:4]:
+                    question_crafter_prompt = f"Generate one expert-level Google search query about '{keyword}' for a new tech startup. Respond ONLY with the single query string."
+                    query_response = model.generate_content(question_crafter_prompt)
+                    queries.append(query_response.text.strip().replace('"', ''))
+                
+                # Step 2: Search Web
                 web_results = []
-                image_parts = []
-                yield "Gathering live intelligence (text and images)...<br>"
+                yield "Gathering live intelligence from the web...<br>"
                 for query in queries:
                     yield f"Searching for: '{query}'...<br>"
                     search = GoogleSearch({ "q": query, "api_key": SERPER_API_KEY })
@@ -700,74 +774,38 @@ def deep_dive():
                     for result in organic_results[:3]:
                         if "snippet" in result and "link" in result:
                             web_results.append({ "snippet": result["snippet"], "link": result["link"] })
-                        if "thumbnail" in result and len(image_parts) < 3: # Limit to 3 images for now
-                            try:
-                                img_response = requests.get(result["thumbnail"], stream=True)
-                                img_response.raise_for_status()
-                                image_parts.append(Image.open(io.BytesIO(img_response.content)))
-                            except Exception as e:
-                                print(f"Could not download image: {e}")
-
-                # Step 3: Synthesize Multi-Modal Data into JSON
-                yield "<br>Synthesizing text and visual intelligence...<br><br>"
                 
+                # Step 3: Synthesize Data into JSON
+                yield "<br>Synthesizing final intelligence brief...<br>"
                 synthesis_prompt_parts = [
-                    "You are a world-class business analyst. Your task is to synthesize the user's original document with live intelligence gathered from the web, including text and images (charts, graphs, etc.).",
-                    'Respond ONLY with a single JSON object. The JSON must have keys: "executive_summary", "key_findings" (a list of objects with "insight" and "source" keys), "visual_analysis" (a brief summary of insights from the provided images), and "actionable_recommendations" (a list of strings).',
+                    "You are a world-class business analyst. Your task is to synthesize an original document with live web intelligence.",
+                    'Respond ONLY with a single JSON object. The JSON must have keys: "executive_summary", "key_findings" (a list of objects with "insight" and "source" keys), "swot_analysis" (an object with "strengths", "weaknesses", "opportunities", "threats" as keys, each with a list of strings), and "actionable_recommendations" (a list of strings).',
                     "", "ORIGINAL DOCUMENT CONTEXT:", "---", f"{document_context[:4000]}", "---",
-                    "", "LIVE WEB INTELLIGENCE (TEXT SNIPPETS & SOURCES):", "---", f"{json.dumps(web_results, indent=2)}", "---",
-                    "", "Analyze the following images and incorporate your findings into the 'visual_analysis' key of your JSON response.",
+                    "", "LIVE WEB INTELLIGENCE (SNIPPETS & SOURCES):", "---", f"{json.dumps(web_results, indent=2)}", "---",
                     "", "YOUR JSON RESPONSE:"
                 ]
-                synthesis_prompt_text = "\\n".join(synthesis_prompt_parts)
+                synthesis_prompt = "\\n".join(synthesis_prompt_parts)
+                synthesis_response = model.generate_content(synthesis_prompt)
                 
-                # Combine text prompt with image data
-                synthesis_contents = [synthesis_prompt_text] + image_parts
-                synthesis_response = model.generate_content(synthesis_contents)
-                
-                # Step 4: Format the JSON into a Markdown Report
                 json_text = synthesis_response.text.strip().replace('```json', '').replace('```', '').strip()
-                data = json.loads(json_text)
+                final_data = json.loads(json_text)
                 
-                report_parts = []
-                report_parts.append("## Deep Dive: Oracle Brief")
-                if data.get("executive_summary"): report_parts.append(f"### Executive Summary\\n{data['executive_summary']}\\n")
-                if data.get("key_findings"):
-                    report_parts.append("### Key Findings (Cited from Live Web Data)")
-                    for finding in data['key_findings']:
-                        report_parts.append(f"- {finding['insight']} ([Source]({finding['source']}))")
-                    report_parts.append("")
-                if data.get("visual_analysis"): report_parts.append(f"### Visual Analysis\\n{data['visual_analysis']}\\n")
-                if data.get("actionable_recommendations"):
-                    report_parts.append("### Actionable Recommendations")
-                    for rec in data['actionable_recommendations']:
-                        report_parts.append(f"- {rec}")
-
-                initial_brief = "\\n".join(report_parts)
+                # Step 4: Send the final JSON payload
+                final_payload = f"FINAL_JSON:{json.dumps(final_data)}"
+                yield final_payload
                 
-                # Step 5: Automated SWOT Analysis
-                yield initial_brief
-                yield "\\n\\n---\\n\\n"
-                yield "Performing strategic SWOT analysis...<br><br>"
-                
-                swot_prompt = f"You are a master strategist. Analyze the following intelligence brief. Based SOLELY on this brief, generate a concise SWOT analysis. Respond ONLY with the SWOT analysis in Markdown format.\\n\\nBRIEF:\\n{initial_brief}\\n\\nSWOT ANALYSIS:"
-                swot_response = model.generate_content(swot_prompt)
-                
-                full_swot_analysis = "## SWOT Analysis\\n" + swot_response.text
-                yield full_swot_analysis
-                
-                # Combine for final history saving
-                full_response = initial_brief + "\\n\\n---\\n\\n" + full_swot_analysis
-                
+                full_response_text = json.dumps(final_data, indent=2)
                 chat_history_list.append(('gemini', 'user', "Deep Dive Oracle Analysis"))
-                chat_history_list.append(('gemini', 'model', full_response))
+                chat_history_list.append(('gemini', 'model', full_response_text))
                 
                 conv_to_update = session.merge(conv)
                 conv_to_update.chat_history = pickle.dumps(chat_history_list)
                 session.commit()
 
             except Exception as e:
-                yield f"A critical error occurred during Deep Dive. Error: {str(e)}"
+                error_details = traceback.format_exc()
+                print(f"--- DETAILED ERROR IN /deep_dive ---\\n{error_details}------------------------------------")
+                yield f"A critical error occurred during Deep Dive. Please check server logs."
 
         return Response(generate_deep_dive_response(), mimetype='text/plain')
     
@@ -775,7 +813,7 @@ def deep_dive():
         session.rollback()
         return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
     finally:
-        session.close()
+        session.close() 
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
