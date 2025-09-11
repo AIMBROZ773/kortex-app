@@ -1,4 +1,4 @@
-## KORTEX V1.5 - FINAL, PERFECTED BLUEPRINT ##
+## KORTEX V1.5 - FINAL MASTER BLUEPRINT ##
 import os
 import hashlib
 import pickle
@@ -6,7 +6,7 @@ import io
 import uuid
 import json
 import re
-import traceback 
+import traceback
 import google.generativeai as genai
 from flask import Flask, request, jsonify, render_template_string, Response
 from flask_cors import CORS
@@ -27,7 +27,7 @@ from langchain_core.documents import Document
 from sqlalchemy import desc
 from serpapi import GoogleSearch
 
-app = Flask(__name__) 
+app = Flask(__name__)
 CORS(app)
 
 # --- CONFIGURATION ---
@@ -430,7 +430,10 @@ def upload():
         conv_id_header = request.headers.get('X-Conversation-ID')
         conv = None
         if conv_id_header:
-            conv = session.query(Conversation).filter_by(id=conv_id_header).first()
+            try:
+                conv = session.query(Conversation).filter_by(id=conv_id_header).first()
+            except Exception:
+                conv = None
         
         if conv:
             conv.doc_hash = doc_hash
@@ -460,7 +463,6 @@ def chat():
 
         chat_history_list = pickle.loads(conv.chat_history)
         
-        # General chat (no document)
         if not conv.doc_hash:
              llm = OllamaLLM(base_url=OLLAMA_BASE_URL, model=CHAT_MODEL_NAME)
              def generate_general():
@@ -472,7 +474,6 @@ def chat():
                  session.commit()
              return Response(generate_general(), mimetype='text/plain')
 
-        # Document chat (with the new, robust logic)
         doc_store = session.query(DocumentStore).filter_by(doc_hash=conv.doc_hash).first()
         if not doc_store: return jsonify({"error": "Document data not found"}), 404
 
@@ -480,28 +481,17 @@ def chat():
         vectorstore = FAISS.deserialize_from_bytes(embeddings=embeddings, serialized=pickle.loads(doc_store.faiss_index), allow_dangerous_deserialization=True)
         
         def generate_doc_chat():
-            # Step 1: Manually retrieve relevant context
             retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
             relevant_docs = retriever.get_relevant_documents(message)
             context = "\\n---\\n".join([doc.page_content for doc in relevant_docs])
 
-            # Step 2: Build a simple, clean prompt using the safe string-joining method
             prompt_parts = [
                 "You are a helpful AI assistant. Answer the user's question based ONLY on the following context from the document. If the answer is not in the context, say you don't know.",
-                "",
-                "CONTEXT FROM DOCUMENT:",
-                "---",
-                context,
-                "---",
-                "",
-                "QUESTION:",
-                message,
-                "",
-                "ANSWER:"
+                "", "CONTEXT FROM DOCUMENT:", "---", context, "---",
+                "", "QUESTION:", message, "", "ANSWER:"
             ]
             prompt = "\\n".join(prompt_parts)
             
-            # Step 3: Call the LLM directly
             llm = OllamaLLM(base_url=OLLAMA_BASE_URL, model=CHAT_MODEL_NAME)
             response = llm.invoke(prompt)
             yield response
@@ -514,14 +504,13 @@ def chat():
         return Response(generate_doc_chat(), mimetype='text/plain')
     except Exception as e:
         session.rollback()
-        # --- FINAL DIAGNOSTIC CODE ---
         error_details = traceback.format_exc()
         print("--- DETAILED ERROR IN /chat ---")
         print(error_details)
         print("-------------------------------")
-        return jsonify({"error": "A detailed error occurred. Check server logs."}), 500
+        return jsonify({"error": f"A detailed error occurred. Check server logs."}), 500
     finally:
-        session.close() 
+        session.close()
 
 @app.route('/tutor', methods=['POST'])
 def tutor():
@@ -571,11 +560,11 @@ def tutor():
                     "OTHERWISE (for all subsequent messages), your task is to be a dynamic partner:",
                     "1. Analyze the user's latest message. Is it a response to your question or a new command?",
                     "2. If it's a response, continue the Socratic dialogue.",
-                     "3. If it's a command (e.g., \"make a quiz\"), be a proactive assistant. If the command is ambiguous, ask clarifying questions. **When the user provides specific parameters (like '15 questions'), you MUST adhere to them precisely.** After gathering sufficient information, execute the command. It is better to provide a good result now than to ask endless questions.",
+                    "3. If it's a command (e.g., \"make a quiz\"), be a proactive assistant. If the command is ambiguous, ask clarifying questions. **When the user provides specific parameters (like '15 questions'), you MUST adhere to them precisely.** After gathering sufficient information, execute the command. It is better to provide a good result now than to ask endless questions.",
 
-                   
-                    "",  
-                    "## 3. CONTEXT FOR YOUR MISSION ##",
+
+                    "",
+                    "## 3. CONTEXT FOR YOUR MISSION ##",   
                     f"- **is_first_tutor_message:** {is_first_tutor_message}",
                     f"- **Lesson Plan Roadmap:** {fresh_conv.tutor_curriculum}",
                     f"- **Conversation History:** {gemini_history}",
@@ -596,7 +585,6 @@ def tutor():
                     "     C. [Option C]",
                     "     D. [Option D]",
                     "", 
-                   
                     "## 5. THE USER'S LATEST MESSAGE ##",
                     f'"{message}"',
                     "",
@@ -641,7 +629,9 @@ def deep_dive():
         doc_store = session.query(DocumentStore).filter_by(doc_hash=conv.doc_hash).first()
         if not doc_store: return jsonify({"error": "Document content not found."}), 404
 
-        document_context = "\\n".join([chunk.page_content for chunk in pickle.loads(doc_store.chunks)])
+        loaded_chunks = pickle.loads(doc_store.chunks)
+        document_context = "\\n".join([chunk.page_content for chunk in loaded_chunks]) if loaded_chunks and isinstance(loaded_chunks[0], Document) else "\\n".join(loaded_chunks)
+        
         model = genai.GenerativeModel('gemini-1.5-flash-latest')
         chat_history_list = pickle.loads(conv.chat_history)
 
