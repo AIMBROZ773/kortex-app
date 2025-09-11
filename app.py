@@ -416,23 +416,33 @@ def upload():
         
         doc = session.query(DocumentStore).filter_by(doc_hash=doc_hash).first()
         if not doc:
+            # Use the new universal document reader
             raw_text = get_document_text(filename, file_content)
             
+            # The final resiliency check
             if not raw_text or len(raw_text.strip()) < 50:
                 return jsonify({"error": "This document contains no readable text or is too short to analyze."}), 400
 
+            # Standard processing pipeline
             text_chunks = get_text_chunks(raw_text)
             embeddings = get_ollama_embeddings()
             vectorstore = get_vector_store(text_chunks, embeddings)
-            new_doc = DocumentStore(doc_hash=doc_hash, chunks=pickle.dumps(text_chunks), faiss_index=pickle.dumps(vectorstore.serialize_to_bytes()))
-            session.add(new_doc)
+            
+            # THE CRITICAL FIX: No double serialization on faiss_index
+            new_doc = DocumentStore(
+                doc_hash=doc_hash, 
+                chunks=pickle.dumps(text_chunks), 
+                faiss_index=vectorstore.serialize_to_bytes()
+            )
+            session.add(new_doc)   
         
         conv_id_header = request.headers.get('X-Conversation-ID')
         conv = None
         if conv_id_header:
             try:
-                conv = session.query(Conversation).filter_by(id=conv_id_header).first()
-            except Exception:
+                # Use a valid UUID string for the query
+                conv = session.query(Conversation).filter_by(id=uuid.UUID(conv_id_header)).first()
+            except (ValueError, Exception):
                 conv = None
         
         if conv:
@@ -463,10 +473,14 @@ def chat():
 
         chat_history_list = pickle.loads(conv.chat_history)
         
+        # General chat (no document)
         if not conv.doc_hash:
              llm = OllamaLLM(base_url=OLLAMA_BASE_URL, model=CHAT_MODEL_NAME)
              def generate_general():
-                 response = llm.invoke(message)
+                 # For general chat, we can build a simple history string
+                 history_string = "\\n".join([f"User: {turn[1]}\\nAI: {turn[2]}" for turn in chat_history_list if turn[0] == 'langchain'])
+                 prompt = f"Continue the conversation naturally.\\n{history_string}\\nUser: {message}\\nAI:"
+                 response = llm.invoke(prompt)
                  yield response
                  chat_history_list.append(('langchain', message, response))
                  conv_to_update = session.merge(conv)
@@ -474,24 +488,51 @@ def chat():
                  session.commit()
              return Response(generate_general(), mimetype='text/plain')
 
+        # Document chat (with conversational memory)
         doc_store = session.query(DocumentStore).filter_by(doc_hash=conv.doc_hash).first()
         if not doc_store: return jsonify({"error": "Document data not found"}), 404
 
         embeddings = get_ollama_embeddings()
-        vectorstore = FAISS.deserialize_from_bytes(embeddings=embeddings, serialized=pickle.loads(doc_store.faiss_index), allow_dangerous_deserialization=True)
+        vectorstore = FAISS.deserialize_from_bytes(embeddings=embeddings, serialized=doc_store.faiss_index, allow_dangerous_deserialization=True) 
         
         def generate_doc_chat():
-            retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
+            # Step 1: Manually retrieve relevant context 
+            retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
             relevant_docs = retriever.get_relevant_documents(message)
             context = "\\n---\\n".join([doc.page_content for doc in relevant_docs])
+            
+            # Step 2: Get recent chat history
+            recent_history = chat_history_list[-4:] # Get last 2 turns
+            history_string = ""
+            for turn in recent_history:
+                speaker = "User" if turn[0] == 'user' or (len(turn) > 1 and turn[1] == message) else "AI"
+                content = turn[2] if len(turn) > 2 else turn[1]
+                history_string += f"{speaker}: {content}\\n"
 
+
+            # Step 3: Build a simple, clean prompt with memory
             prompt_parts = [
-                "You are a helpful AI assistant. Answer the user's question based ONLY on the following context from the document. If the answer is not in the context, say you don't know.",
-                "", "CONTEXT FROM DOCUMENT:", "---", context, "---",
-                "", "QUESTION:", message, "", "ANSWER:"
+                "You are Kortex, a helpful AI assistant. Answer the user's question based on the conversation history and the provided document context.",
+                "If the question is about the most recent thing the AI said, use the history to understand that.",
+                "",
+                "CONVERSATION HISTORY:",
+                "---",
+                history_string,
+                "---",
+                "",
+                "CONTEXT FROM DOCUMENT:",
+                "---",
+                context,
+                "---",
+                "",
+                "QUESTION:",
+                message,
+                "",
+                "ANSWER:"
             ]
             prompt = "\\n".join(prompt_parts)
             
+            # Step 4: Call the LLM directly
             llm = OllamaLLM(base_url=OLLAMA_BASE_URL, model=CHAT_MODEL_NAME)
             response = llm.invoke(prompt)
             yield response
@@ -508,7 +549,7 @@ def chat():
         print("--- DETAILED ERROR IN /chat ---")
         print(error_details)
         print("-------------------------------")
-        return jsonify({"error": f"A detailed error occurred. Check server logs."}), 500
+        return jsonify({"error": "A detailed error occurred. Check server logs."}), 500
     finally:
         session.close()
 
@@ -632,7 +673,8 @@ def deep_dive():
         loaded_chunks = pickle.loads(doc_store.chunks)
         document_context = "\\n".join([chunk.page_content for chunk in loaded_chunks]) if loaded_chunks and isinstance(loaded_chunks[0], Document) else "\\n".join(loaded_chunks)
         
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        # NOTE: Using the PRO model for this high-level reasoning task.
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')   
         chat_history_list = pickle.loads(conv.chat_history)
 
         def generate_deep_dive_response():
@@ -640,36 +682,84 @@ def deep_dive():
                 # Step 1: Generate Queries
                 query_gen_prompt = f"Analyze document. Generate JSON array of 3 expert Google queries for risks & trends. ONLY JSON array.\\n\\nDOC:{document_context[:4000]}"
                 query_response = model.generate_content(query_gen_prompt)
-                
                 response_text = query_response.text
-                json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+                json_match = re.search(r'\\[.*\\]|\\{.*\\}', response_text, re.DOTALL)
                 if not json_match: raise ValueError("AI failed to generate search queries.")
                 json_str = json_match.group(0)
                 queries = json.loads(json_str)
 
-                # Step 2: Search Web
-                web_context = ""
-                yield "Gathering live intelligence...<br>"
+                # Step 2: Search Web & Collect Text and Image Data
+                web_results = []
+                image_parts = []
+                yield "Gathering live intelligence (text and images)...<br>"
                 for query in queries:
                     yield f"Searching for: '{query}'...<br>"
                     search = GoogleSearch({ "q": query, "api_key": SERPER_API_KEY })
                     results = search.get_dict()
                     organic_results = results.get("organic_results", [])
                     for result in organic_results[:3]:
-                        if "snippet" in result: web_context += result["snippet"] + "<br>"
+                        if "snippet" in result and "link" in result:
+                            web_results.append({ "snippet": result["snippet"], "link": result["link"] })
+                        if "thumbnail" in result and len(image_parts) < 3: # Limit to 3 images for now
+                            try:
+                                img_response = requests.get(result["thumbnail"], stream=True)
+                                img_response.raise_for_status()
+                                image_parts.append(Image.open(io.BytesIO(img_response.content)))
+                            except Exception as e:
+                                print(f"Could not download image: {e}")
+
+                # Step 3: Synthesize Multi-Modal Data into JSON
+                yield "<br>Synthesizing text and visual intelligence...<br><br>"
                 
-                # Step 3: Synthesize
-                yield "<br>Synthesizing intelligence brief...<br><br>"
-                synthesis_prompt = f"You are a world-class analyst. Synthesize original doc with live web data. Create a concise, actionable brief. Use Markdown.\\n\\nORIGINAL DOC:{document_context[:4000]}\\n\\nLIVE WEB DATA:{web_context}\\n\\nBRIEF:"
-                synthesis_stream = model.generate_content(synthesis_prompt, stream=True)
+                synthesis_prompt_parts = [
+                    "You are a world-class business analyst. Your task is to synthesize the user's original document with live intelligence gathered from the web, including text and images (charts, graphs, etc.).",
+                    'Respond ONLY with a single JSON object. The JSON must have keys: "executive_summary", "key_findings" (a list of objects with "insight" and "source" keys), "visual_analysis" (a brief summary of insights from the provided images), and "actionable_recommendations" (a list of strings).',
+                    "", "ORIGINAL DOCUMENT CONTEXT:", "---", f"{document_context[:4000]}", "---",
+                    "", "LIVE WEB INTELLIGENCE (TEXT SNIPPETS & SOURCES):", "---", f"{json.dumps(web_results, indent=2)}", "---",
+                    "", "Analyze the following images and incorporate your findings into the 'visual_analysis' key of your JSON response.",
+                    "", "YOUR JSON RESPONSE:"
+                ]
+                synthesis_prompt_text = "\\n".join(synthesis_prompt_parts)
                 
-                full_response = ""
-                for chunk in synthesis_stream:
-                    if chunk.text:
-                        yield chunk.text
-                        full_response += chunk.text
+                # Combine text prompt with image data
+                synthesis_contents = [synthesis_prompt_text] + image_parts
+                synthesis_response = model.generate_content(synthesis_contents)
                 
-                chat_history_list.append(('gemini', 'user', "Deep Dive Analysis"))
+                # Step 4: Format the JSON into a Markdown Report
+                json_text = synthesis_response.text.strip().replace('```json', '').replace('```', '').strip()
+                data = json.loads(json_text)
+                
+                report_parts = []
+                report_parts.append("## Deep Dive: Oracle Brief")
+                if data.get("executive_summary"): report_parts.append(f"### Executive Summary\\n{data['executive_summary']}\\n")
+                if data.get("key_findings"):
+                    report_parts.append("### Key Findings (Cited from Live Web Data)")
+                    for finding in data['key_findings']:
+                        report_parts.append(f"- {finding['insight']} ([Source]({finding['source']}))")
+                    report_parts.append("")
+                if data.get("visual_analysis"): report_parts.append(f"### Visual Analysis\\n{data['visual_analysis']}\\n")
+                if data.get("actionable_recommendations"):
+                    report_parts.append("### Actionable Recommendations")
+                    for rec in data['actionable_recommendations']:
+                        report_parts.append(f"- {rec}")
+
+                initial_brief = "\\n".join(report_parts)
+                
+                # Step 5: Automated SWOT Analysis
+                yield initial_brief
+                yield "\\n\\n---\\n\\n"
+                yield "Performing strategic SWOT analysis...<br><br>"
+                
+                swot_prompt = f"You are a master strategist. Analyze the following intelligence brief. Based SOLELY on this brief, generate a concise SWOT analysis. Respond ONLY with the SWOT analysis in Markdown format.\\n\\nBRIEF:\\n{initial_brief}\\n\\nSWOT ANALYSIS:"
+                swot_response = model.generate_content(swot_prompt)
+                
+                full_swot_analysis = "## SWOT Analysis\\n" + swot_response.text
+                yield full_swot_analysis
+                
+                # Combine for final history saving
+                full_response = initial_brief + "\\n\\n---\\n\\n" + full_swot_analysis
+                
+                chat_history_list.append(('gemini', 'user', "Deep Dive Oracle Analysis"))
                 chat_history_list.append(('gemini', 'model', full_response))
                 
                 conv_to_update = session.merge(conv)
