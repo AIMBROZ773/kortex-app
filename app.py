@@ -6,6 +6,7 @@ import io
 import uuid
 import json
 import re
+import traceback 
 import google.generativeai as genai
 from flask import Flask, request, jsonify, render_template_string, Response
 from flask_cors import CORS
@@ -513,7 +514,12 @@ def chat():
         return Response(generate_doc_chat(), mimetype='text/plain')
     except Exception as e:
         session.rollback()
-        return jsonify({"error": f"An error occurred: {str(e)}"}), 500
+        # --- FINAL DIAGNOSTIC CODE ---
+        error_details = traceback.format_exc()
+        print("--- DETAILED ERROR IN /chat ---")
+        print(error_details)
+        print("-------------------------------")
+        return jsonify({"error": "A detailed error occurred. Check server logs."}), 500
     finally:
         session.close() 
 
